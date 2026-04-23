@@ -13,6 +13,7 @@ from packages.schemas.coder_schema import CoderResponse
 from packages.agents import auditor_agent, architect_agent, coder_agent
 from packages.services.github import github_service
 from packages.services.supabase_service import supabase_service
+from apps.api.config import settings
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 logger = logging.getLogger(__name__)
