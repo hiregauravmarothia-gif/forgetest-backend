@@ -28,6 +28,7 @@ class JobStatusResponse(BaseModel):
     audit: dict | None = None
     architect: dict | None = None
     coder: dict | None = None
+    pr_result: dict | None = None
     error: str | None = None
 
 
@@ -115,6 +116,7 @@ async def get_pipeline_status(job_id: str) -> JobStatusResponse:
         audit=job.get("audit_result"),
         architect=job.get("architect_result"),
         coder=job.get("coder_result"),
+        pr_result=job.get("pr_result"),
         error=job.get("error")
     )
 
@@ -123,7 +125,22 @@ async def run_coder_async(job_id: str, story: JiraStory, architect_response: Arc
     try:
         coder_response = await coder_agent.generate(story, architect_response)
         await supabase_service.set_coder_result(job_id, coder_response.model_dump())
-        await supabase_service.set_status(job_id, "completed")
+
+        # GitHub PR creation — non-blocking, failure doesn't fail the job
+        pr_result = None
+        try:
+            pr_response = await github_service.create_pr(
+                issue_key=story.issue_key,
+                coder_response=coder_response,
+                architect_response=architect_response,
+                repo=settings.github_default_repo
+            )
+            pr_result = pr_response.model_dump()
+            logger.info(f"PR created for job {job_id}: {pr_response.pr_url}")
+        except Exception as pr_err:
+            logger.warning(f"PR creation failed for job {job_id}: {str(pr_err)}")
+
+        await supabase_service.update_job(job_id, pr_result=pr_result, status="completed")
         logger.info(f"Coder completed for job {job_id}")
     except Exception as e:
         error_msg = f"Coder failed: {str(e)}"
