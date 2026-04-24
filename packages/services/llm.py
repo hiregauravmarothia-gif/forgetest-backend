@@ -25,7 +25,9 @@ PROVIDERS = [
         "extra_headers": {
             "HTTP-Referer": "https://forgetest.dev",
             "X-Title": "ForgeTest"
-        }
+        },
+        "max_tokens": 8192,
+        "supports_seed": True,
     },
     {
         "name": "gpt-oss-20b",
@@ -37,16 +39,9 @@ PROVIDERS = [
         "extra_headers": {
             "HTTP-Referer": "https://forgetest.dev",
             "X-Title": "ForgeTest"
-        }
-    },
-    {
-        "name": "nemotron",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-        "api_key": lambda: settings.nvidia_api_key,
-        "timeout": 120.0,
-        "content_fallback": "reasoning",
-        "extra_headers": {}
+        },
+        "max_tokens": 8192,
+        "supports_seed": True,
     },
     {
         "name": "gemini-flash",
@@ -55,7 +50,20 @@ PROVIDERS = [
         "api_key": lambda: settings.gemini_api_key,
         "timeout": 60.0,
         "content_fallback": None,
-        "extra_headers": {}
+        "extra_headers": {},
+        "max_tokens": 4096,      # Gemini Flash OpenAI-compat endpoint: keep output budget safe
+        "supports_seed": False,  # Gemini rejects `seed` with 400 — must strip it
+    },
+    {
+        "name": "nemotron",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "api_key": lambda: settings.nvidia_api_key,
+        "timeout": 60.0,         # was 120s — trimmed to fail faster if unresponsive
+        "content_fallback": "reasoning",
+        "extra_headers": {},
+        "max_tokens": 8192,
+        "supports_seed": True,
     },
 ]
 
@@ -87,6 +95,8 @@ class LLMService:
             timeout = provider["timeout"]
             content_fallback = provider.get("content_fallback")
             extra_headers = provider.get("extra_headers", {})
+            max_tokens = provider.get("max_tokens", 8192)
+            supports_seed = provider.get("supports_seed", True)
 
             if not api_key:
                 logger.warning(f"Provider {provider_name}: no API key, skipping")
@@ -101,10 +111,14 @@ class LLMService:
             payload = {
                 "model": model,
                 "messages": messages,
-                "max_tokens": 8192,
-                "temperature": 0,       # Lock to deterministic output
-                "seed": 42,             # Supported by OpenRouter + NVIDIA; ignored gracefully by Gemini
+                "max_tokens": max_tokens,
+                "temperature": 0,
             }
+
+            # Only add seed for providers that support it
+            # Gemini's OpenAI-compat endpoint returns 400 on unknown params
+            if supports_seed:
+                payload["seed"] = 42
 
             start_time = time.perf_counter()
 
@@ -150,7 +164,7 @@ class LLMService:
             except Exception as e:
                 duration_ms = (time.perf_counter() - start_time) * 1000
                 logger.warning(
-                    f"Provider {provider_name} failed: {str(e)[:100]}, "
+                    f"Provider {provider_name} failed: {str(e)[:200]}, "
                     f"duration_ms={duration_ms:.2f}, trying next..."
                 )
                 last_error = e
