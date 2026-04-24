@@ -41,6 +41,9 @@ class SupabaseService:
             "story": story.model_dump() if hasattr(story, 'model_dump') else story,
             "create_pr": create_pr,
             "github_repo": github_repo,
+            "approve_path": "A",
+            "edited_acs": None,
+            "validator_result": None,
         }
         async with httpx.AsyncClient() as client:
             response = await client.post(self._base, headers=self._headers, json=payload)
@@ -92,7 +95,6 @@ class SupabaseService:
 
     async def set_coder_result(self, job_id: str, coder_result: dict) -> None:
         await self.update_job(job_id, coder_result=coder_result)
-
 
     async def get_active_job_for_issue(self, issue_key: str) -> Optional[dict]:
         """
