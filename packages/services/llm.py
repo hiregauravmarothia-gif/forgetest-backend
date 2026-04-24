@@ -15,6 +15,7 @@ _response_cache: dict[str, str] = {}
 
 
 PROVIDERS = [
+    # ── Tier 1: OpenRouter free models (best quality, try first) ──────────────
     {
         "name": "gpt-oss-120b",
         "base_url": "https://openrouter.ai/api/v1",
@@ -43,6 +44,19 @@ PROVIDERS = [
         "max_tokens": 8192,
         "supports_seed": True,
     },
+    # ── Tier 2: Groq — fast, reliable, generous free tier ─────────────────────
+    {
+        "name": "groq-llama-70b",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "llama-3.3-70b-versatile",
+        "api_key": lambda: settings.groq_api_key,
+        "timeout": 60.0,
+        "content_fallback": None,
+        "extra_headers": {},
+        "max_tokens": 8192,
+        "supports_seed": True,
+    },
+    # ── Tier 3: Gemini Flash — good fallback, strips seed param ───────────────
     {
         "name": "gemini-flash",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -51,15 +65,16 @@ PROVIDERS = [
         "timeout": 60.0,
         "content_fallback": None,
         "extra_headers": {},
-        "max_tokens": 4096,      # Gemini Flash OpenAI-compat endpoint: keep output budget safe
+        "max_tokens": 4096,      # keep output budget safe on OpenAI-compat endpoint
         "supports_seed": False,  # Gemini rejects `seed` with 400 — must strip it
     },
+    # ── Tier 4: Nemotron — last resort, can be slow ───────────────────────────
     {
         "name": "nemotron",
         "base_url": "https://integrate.api.nvidia.com/v1",
         "model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
         "api_key": lambda: settings.nvidia_api_key,
-        "timeout": 60.0,         # was 120s — trimmed to fail faster if unresponsive
+        "timeout": 60.0,
         "content_fallback": "reasoning",
         "extra_headers": {},
         "max_tokens": 8192,
