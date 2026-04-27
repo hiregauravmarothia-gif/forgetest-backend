@@ -40,15 +40,6 @@ class JobStatusResponse(BaseModel):
     error: str | None = None
 
 
-# ── NEW: StartRequest wraps PipelineRequest + skip_audit flag ──────────────────
-# Using a separate model so PipelineRequest (shared schema) stays untouched.
-class StartRequest(BaseModel):
-    story: JiraStory
-    skip_audit: bool = False          # True → bypass Auditor + Architect, go straight to Coder
-    create_pr: Optional[bool] = False
-    github_repo: Optional[str] = None
-
-
 class ApproveRequest(BaseModel):
     path: str = "A"                          # "A" = original ACs, "B" = user-edited ACs
     edited_acs: Optional[list[dict]] = None  # Only used for Path B
@@ -61,7 +52,35 @@ class ApproveResponse(BaseModel):
     issue_key: str
 
 
-# ── Full pipeline (Auditor → Architect → awaiting_review) ─────────────────────
+async def run_skip_audit_async(story: JiraStory, job_id: str):
+    ts = datetime.now(timezone.utc).isoformat()
+    skipped_audit = {
+        "skipped": True, "overall_score": None,
+        "last_analyzed": ts,
+        "recommended_next_step": "Tests generated directly from Jira ACs."
+    }
+    await supabase_service.set_audit_result(job_id, skipped_audit)
+    from packages.schemas.architect_schema import ProposedAC, ACType
+    proposed_acs = []
+    for i, ac_text in enumerate(story.acceptance_criteria or []):
+        proposed_acs.append(ProposedAC(
+            id=f"AC-{i+1}", given="the user has access to the feature",
+            when=f"the action described in AC-{i+1} is performed",
+            then=ac_text, tag=ACType.HAPPY
+        ))
+    minimal_architect = ArchitectResponse(
+        issue_key=story.issue_key, hidden_paths=HiddenPaths(),
+        proposed_acs=proposed_acs,
+        gherkin=f"Feature: {story.title}\n  # Generated from {len(proposed_acs)} ACs",
+        assumptions=["Tests generated directly from Jira ACs without AI enrichment."],
+        timestamp=ts
+    )
+    await supabase_service.set_architect_result(job_id, minimal_architect.model_dump())
+    await supabase_service.set_status(job_id, "running_coder")
+    await run_coder_async(job_id=job_id, story=story,
+        architect_response=minimal_architect, path="A", edited_acs=None)
+
+
 async def run_pipeline_async(story: JiraStory, job_id: str):
     try:
         audit_response = await auditor_agent.audit(story)
@@ -76,9 +95,21 @@ async def run_pipeline_async(story: JiraStory, job_id: str):
         return
 
     score = audit_response.overall_score
+    ts = datetime.now(timezone.utc).isoformat()
 
     if score >= 0.7:
-        await supabase_service.set_status(job_id, "completed")
+        # PASS — create minimal architect and go straight to awaiting_review
+        # so user can still approve and get tests generated via Path A
+        minimal_architect = ArchitectResponse(
+            issue_key=story.issue_key,
+            hidden_paths=HiddenPaths(),
+            proposed_acs=[],
+            gherkin="Feature: Auto-generated\n  Scenario: Pass-through",
+            assumptions=[],
+            timestamp=ts
+        )
+        await supabase_service.set_architect_result(job_id, minimal_architect.model_dump())
+        await supabase_service.set_status(job_id, "awaiting_review")
     else:
         try:
             architect_response = await architect_agent.enrich(story, audit_response)
@@ -88,49 +119,6 @@ async def run_pipeline_async(story: JiraStory, job_id: str):
             await supabase_service.set_status(job_id, "failed", error=f"Architect failed: {str(e)}")
 
 
-# ── Skip-audit pipeline (Coder directly from raw Jira ACs) ────────────────────
-async def run_direct_pipeline_async(story: JiraStory, job_id: str):
-    """
-    Fast path: skip Auditor and Architect entirely.
-    Builds a minimal ArchitectResponse from the story's raw ACs and fires the
-    Coder → Validator → GitHub PR chain directly.
-    """
-    ts = datetime.now(timezone.utc).isoformat()
-
-    # Build a pass-through audit result so /status returns something sensible
-    # (front-end shows score in completed state — use None to signal skipped)
-    audit_stub = {
-        "overall_score": None,
-        "skipped": True,
-        "last_analyzed": ts,
-        "recommended_next_step": "Tests generated directly from Jira ACs (audit skipped).",
-    }
-    await supabase_service.set_audit_result(job_id, audit_stub)
-
-    # Build minimal ArchitectResponse from raw story ACs
-    raw_acs = story.acceptance_criteria or []
-    minimal_architect = ArchitectResponse(
-        issue_key=story.issue_key,
-        hidden_paths=HiddenPaths(),
-        proposed_acs=[],      # no proposed ACs — coder uses raw story ACs
-        gherkin="",
-        assumptions=[],
-        timestamp=ts
-    )
-    await supabase_service.set_architect_result(job_id, minimal_architect.model_dump())
-    await supabase_service.set_status(job_id, "running_coder")
-
-    # Fire the same coder loop used by the approve endpoint
-    await run_coder_async(
-        job_id=job_id,
-        story=story,
-        architect_response=minimal_architect,
-        path="A",          # use raw story ACs (no edited_acs)
-        edited_acs=None,
-    )
-
-
-# ── Coder → Validator → PR loop (shared by approve + direct) ──────────────────
 async def run_coder_async(
     job_id: str,
     story: JiraStory,
@@ -144,6 +132,7 @@ async def run_coder_async(
 
     while retry_count <= MAX_RETRIES:
         try:
+            # Generate tests — pass edited_acs and feedback on retries
             coder_response = await coder_agent.generate(
                 story=story,
                 architect_response=architect_response,
@@ -169,6 +158,7 @@ async def run_coder_async(
             logger.warning(f"Validator failed for job {job_id}: {str(e)} — proceeding without validation")
             validator_response = None
 
+        # Store latest coder + validator results
         await supabase_service.set_coder_result(job_id, coder_response.model_dump())
         if validator_response:
             await supabase_service.update_job(
@@ -176,6 +166,7 @@ async def run_coder_async(
                 validator_result=validator_response.model_dump()
             )
 
+        # Check if validator passed or we should retry
         if validator_response is None or validator_response.status == ValidatorStatus.PASSED:
             logger.info(f"Validator passed for job {job_id} on attempt {retry_count + 1}")
             break
@@ -187,11 +178,12 @@ async def run_coder_async(
             )
             break
 
+        # Build feedback for next Coder attempt
         validator_feedback = validator_agent.build_feedback_prompt(validator_response)
         retry_count += 1
         logger.info(f"Validator retry {retry_count}/{MAX_RETRIES} for job {job_id}")
 
-    # GitHub PR — non-blocking
+    # GitHub PR creation — non-blocking
     pr_result = None
     try:
         pr_response = await github_service.create_pr(
@@ -209,8 +201,6 @@ async def run_coder_async(
     logger.info(f"Pipeline completed for job {job_id}")
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
-
 @router.post("/prescan", response_model=PrescanResponse, status_code=200)
 async def prescan_story(request: PipelineRequest) -> PrescanResponse:
     from packages.agents.prescan_agent import prescan_agent
@@ -218,7 +208,7 @@ async def prescan_story(request: PipelineRequest) -> PrescanResponse:
 
 
 @router.post("/start", response_model=JobStartResponse)
-async def start_pipeline(request: StartRequest) -> JobStartResponse:
+async def start_pipeline(request: PipelineRequest) -> JobStartResponse:
     issue_key = request.story.issue_key
 
     existing = await supabase_service.get_active_job_for_issue(issue_key)
@@ -234,12 +224,11 @@ async def start_pipeline(request: StartRequest) -> JobStartResponse:
         github_repo=request.github_repo
     )
 
-    if request.skip_audit:
-        logger.info(f"Direct generation (skip_audit=True) for job {job_id}, issue {issue_key}")
-        asyncio.create_task(run_direct_pipeline_async(request.story, job_id))
+    skip_audit = getattr(request, 'skip_audit', False) or False
+    if skip_audit:
+        asyncio.create_task(run_skip_audit_async(request.story, job_id))
     else:
         asyncio.create_task(run_pipeline_async(request.story, job_id))
-
     return JobStartResponse(job_id=job_id, status="started")
 
 
@@ -275,14 +264,30 @@ async def approve_pipeline(job_id: str, request: ApproveRequest = None) -> Appro
     await supabase_service.set_status(job_id, "running_coder")
 
     story = JiraStory(**job["story"])
-    architect_response = ArchitectResponse(**job["architect_result"])
 
+    # Handle case where architect_result is null (PASS stories)
+    architect_data = job.get("architect_result")
+    if architect_data:
+        architect_response = ArchitectResponse(**architect_data)
+    else:
+        ts = datetime.now(timezone.utc).isoformat()
+        architect_response = ArchitectResponse(
+            issue_key=story.issue_key,
+            hidden_paths=HiddenPaths(),
+            proposed_acs=[],
+            gherkin="Feature: Auto-generated\n  Scenario: Pass-through",
+            assumptions=[],
+            timestamp=ts
+        )
+
+    # Store path choice and edited ACs in job for reference
     await supabase_service.update_job(
         job_id,
         approve_path=request.path,
         edited_acs=request.edited_acs
     )
 
+    # Fire coder + validator in background
     asyncio.create_task(run_coder_async(
         job_id=job_id,
         story=story,
