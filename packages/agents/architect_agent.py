@@ -75,12 +75,15 @@ class ArchitectAgent:
         # Build audit issues list
         issues_text = "\n".join([f"- {i}" for i in (audit.issues or [])]) if audit.issues else "None"
         
-        # Build dimension scores
-        dims = audit.dimensions or {}
+        # Build dimension scores (DimensionScores is a Pydantic model, not a dict)
+        dims = audit.dimensions
         dim_lines = []
-        for dim_name, dim_val in dims.items():
-            score_val = dim_val if isinstance(dim_val, (int, float)) else getattr(dim_val, 'score', 0)
-            dim_lines.append(f"- {dim_name}: {round(score_val * 100)}%")
+        if dims:
+            dim_lines.append(f"- Clarity: {round(dims.clarity * 100)}% — {dims.clarity_reason}")
+            dim_lines.append(f"- Completeness: {round(dims.completeness * 100)}% — {dims.completeness_reason}")
+            dim_lines.append(f"- Testability: {round(dims.testability * 100)}% — {dims.testability_reason}")
+            dim_lines.append(f"- Edge Cases: {round(dims.edge_cases * 100)}% — {dims.edge_cases_reason}")
+            dim_lines.append(f"- Consistency: {round(dims.consistency * 100)}% — {dims.consistency_reason}")
         dims_text = "\n".join(dim_lines) if dim_lines else "None"
 
         epic = f"\nEpic: {story.epic_context}" if story.epic_context else ""
