@@ -97,33 +97,14 @@ async def run_pipeline_async(story: JiraStory, job_id: str):
     score = audit_response.overall_score
     ts = datetime.now(timezone.utc).isoformat()
 
-    if score >= 0.7:
-        # PASS — create architect from original Jira ACs so user can review/edit
-        from packages.schemas.architect_schema import ProposedAC, ACType
-        proposed_acs = []
-        for i, ac_text in enumerate(story.acceptance_criteria or []):
-            proposed_acs.append(ProposedAC(
-                id=f"AC-{i+1}", given="the user has access to the feature",
-                when=f"the action described in AC-{i+1} is performed",
-                then=ac_text, tag=ACType.HAPPY
-            ))
-        minimal_architect = ArchitectResponse(
-            issue_key=story.issue_key,
-            hidden_paths=HiddenPaths(),
-            proposed_acs=proposed_acs,
-            gherkin=f"Feature: {story.title}\n  # Generated from {len(proposed_acs)} original ACs",
-            assumptions=["Story passed quality gate. ACs sourced from original Jira story."],
-            timestamp=ts
-        )
-        await supabase_service.set_architect_result(job_id, minimal_architect.model_dump())
+    # Always run architect to enrich ACs based on audit findings,
+    # regardless of score. Score only determines UI verdict (PASS/ENRICH/REJECT).
+    try:
+        architect_response = await architect_agent.enrich(story, audit_response)
+        await supabase_service.set_architect_result(job_id, architect_response.model_dump())
         await supabase_service.set_status(job_id, "awaiting_review")
-    else:
-        try:
-            architect_response = await architect_agent.enrich(story, audit_response)
-            await supabase_service.set_architect_result(job_id, architect_response.model_dump())
-            await supabase_service.set_status(job_id, "awaiting_review")
-        except Exception as e:
-            await supabase_service.set_status(job_id, "failed", error=f"Architect failed: {str(e)}")
+    except Exception as e:
+        await supabase_service.set_status(job_id, "failed", error=f"Architect failed: {str(e)}")
 
 
 async def run_coder_async(
@@ -350,37 +331,16 @@ async def run_pipeline(request: PipelineRequest) -> PipelineResponse:
     score = audit_response.overall_score
     ts = datetime.now(timezone.utc).isoformat()
 
-    if score >= 0.7:
-        from packages.schemas.architect_schema import ProposedAC, ACType
-        proposed_acs = []
-        for i, ac_text in enumerate(story.acceptance_criteria or []):
-            proposed_acs.append(ProposedAC(
-                id=f"AC-{i+1}", given="the user has access to the feature",
-                when=f"the action described in AC-{i+1} is performed",
-                then=ac_text, tag=ACType.HAPPY
-            ))
-        minimal_architect = ArchitectResponse(
-            issue_key=story.issue_key,
-            hidden_paths=HiddenPaths(),
-            proposed_acs=proposed_acs,
-            gherkin=f"Feature: {story.title}\n  # Generated from {len(proposed_acs)} original ACs",
-            assumptions=["Story passed quality gate. ACs sourced from original Jira story."],
-            timestamp=ts
-        )
-        try:
-            coder_response = await coder_agent.generate(story, minimal_architect)
-        except Exception as e:
-            error_msg = f"Coder failed: {str(e)}"
-    else:
-        try:
-            architect_response = await architect_agent.enrich(story, audit_response)
-            coder_response = await coder_agent.generate(story, architect_response)
-            if score < 0.4:
-                pipeline_status = "ENRICHMENT_REQUIRED"
-        except Exception as e:
-            error_msg = f"Pipeline step failed: {str(e)}"
-            if score < 0.7:
-                pipeline_status = "ENRICHMENT_REQUIRED"
+    # Always run architect to enrich ACs based on audit findings
+    try:
+        architect_response = await architect_agent.enrich(story, audit_response)
+        coder_response = await coder_agent.generate(story, architect_response)
+        if score < 0.4:
+            pipeline_status = "ENRICHMENT_REQUIRED"
+    except Exception as e:
+        error_msg = f"Pipeline step failed: {str(e)}"
+        if score < 0.7:
+            pipeline_status = "ENRICHMENT_REQUIRED"
 
     if not coder_response and score >= 0.7:
         pipeline_status = "REJECTED"
