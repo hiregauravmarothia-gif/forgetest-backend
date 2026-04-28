@@ -167,6 +167,8 @@ class CoderAgent:
             )
 
         # Path B: use user-edited ACs instead of architect proposed ACs
+        # The user has already reviewed everything — their list is the ONLY source of truth.
+        # Rejected ACs are filtered out by the ModalApp before reaching here.
         if edited_acs:
             edited_text = "\n".join([
                 f"{ac.get('id', f'AC-{i+1}')} [{ac.get('tag', 'HAPPY')}]\n"
@@ -176,19 +178,33 @@ class CoderAgent:
                 for i, ac in enumerate(edited_acs)
             ])
             proposed_acs = f"USER-REVIEWED ACs (primary source):\n{edited_text}"
+            # Clear original ACs — the user's reviewed list supersedes them.
+            # Without this, the LLM generates tests for rejected ACs too.
+            original_acs = ""
 
         feedback_section = ""
         if validator_feedback:
             feedback_section = f"\n\nVALIDATOR FEEDBACK - FIX THESE ISSUES:\n{validator_feedback}"
 
-        return f"""Issue: {story.issue_key} — {story.title}
-Description: {story.description or 'Not provided'}
+        # Build the prompt — adapt wording based on whether we have user-reviewed ACs
+        if edited_acs:
+            ac_section = f"""USER-REVIEWED ACCEPTANCE CRITERIA (cover ONLY these — {len(edited_acs)} ACs):
+{proposed_acs}
 
-ORIGINAL ACCEPTANCE CRITERIA (cover ALL of these):
+⚠️ IMPORTANT: Generate tests ONLY for the {len(edited_acs)} ACs listed above.
+Do NOT add tests for any ACs that are not in this list. The user has reviewed
+and removed ACs they don't want tested."""
+        else:
+            ac_section = f"""ORIGINAL ACCEPTANCE CRITERIA (cover ALL of these):
 {original_acs or 'See proposed ACs below'}
 
 PROPOSED ACs (Given/When/Then):
-{proposed_acs or 'See original ACs above'}
+{proposed_acs or 'See original ACs above'}"""
+
+        return f"""Issue: {story.issue_key} — {story.title}
+Description: {story.description or 'Not provided'}
+
+{ac_section}
 
 GHERKIN SPECIFICATION:
 {gherkin_text}
