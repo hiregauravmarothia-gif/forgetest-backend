@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_role_key: str = ""
     groq_api_key: str = ""
+    # Shared secret between Forge resolver and Railway backend.
+    # Set as FORGETEST_API_SECRET env var on both Railway and Forge.
+    forgetest_api_secret: str = ""
 
     class Config:
         env_file = ".env"

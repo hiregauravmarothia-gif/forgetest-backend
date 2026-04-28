@@ -67,6 +67,39 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+# ── Auth middleware — protects mutating pipeline endpoints ──
+# Only POST/PATCH/DELETE on /api/v1/pipeline/* require the secret.
+# GET endpoints (status, health) are open so the UI can poll freely.
+PROTECTED_PREFIX = "/api/v1/pipeline"
+PROTECTED_METHODS = {"POST", "PATCH", "DELETE"}
+
+
+@app.middleware("http")
+async def verify_forge_secret(request: Request, call_next):
+    secret = settings.forgetest_api_secret
+
+    # If no secret configured, skip auth (local dev mode)
+    if not secret:
+        return await call_next(request)
+
+    # Only protect mutating calls on the pipeline prefix
+    if (request.url.path.startswith(PROTECTED_PREFIX)
+            and request.method in PROTECTED_METHODS):
+        header_secret = request.headers.get("X-ForgeTest-Secret", "")
+        if header_secret != secret:
+            account_id = request.headers.get("X-Jira-Account-Id", "unknown")
+            logger.warning(
+                f"AUTH REJECTED: {request.method} {request.url.path} "
+                f"from account={account_id} — invalid or missing secret"
+            )
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Forbidden", "detail": "Invalid or missing API secret"}
+            )
+
+    return await call_next(request)
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
