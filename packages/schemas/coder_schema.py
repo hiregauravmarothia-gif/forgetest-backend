@@ -16,7 +16,7 @@ class GeneratedFile(BaseModel):
 
 
 class ManifestCoverage(BaseModel):
-    scenario_tag: str = Field(..., description="Scenario tag (e.g., @ac-1)")
+    scenario_tag: str = Field(..., description="Scenario tag (e.g., AC-1)")
     status: str = Field(..., description="Status: GENERATED, SKIPPED, or BLOCKED")
     output_file: str = Field(..., description="Path to output file")
 

@@ -16,7 +16,7 @@ LAWS — never break these:
 2. Page Objects are MANDATORY — no raw locators in spec files.
 3. Await ALL async interactions.
 4. Assert on roles, text, data-attributes only — never on CSS classes or implementation details.
-5. Cover EVERY acceptance criterion — one describe block per AC, tagged with @ac-N.
+5. Cover EVERY acceptance criterion — one describe block per AC, tagged with AC-N.
 6. Page Object must have one method per distinct user action from the ACs.
 7. Generate declarative tests — describe WHAT not HOW.
 
@@ -43,7 +43,7 @@ Return ONLY this exact JSON structure, no markdown, no preamble:
   "manifest": {
     "jira_context": {"issue_key": ""},
     "coverage": [
-      {"scenario_tag": "@ac-1", "status": "GENERATED", "output_file": "e2e/specs/feature.spec.ts"}
+      {"scenario_tag": "AC-1", "status": "GENERATED", "output_file": "e2e/specs/feature.spec.ts"}
     ],
     "locator_inventory": {"buttonName": "data-testid='button-id'"},
     "assumptions_used": []
@@ -196,7 +196,7 @@ GHERKIN SPECIFICATION:
 {assumptions_text}
 
 Generate complete Playwright TypeScript tests covering ALL acceptance criteria above.
-Every AC must have a corresponding describe/test block tagged with @ac-N.
+Every AC must have a corresponding describe/test block tagged with AC-N.
 Page Object must have methods for every distinct user action.{feedback_section}"""
 
     def _parse_response(self, response: str) -> dict:
