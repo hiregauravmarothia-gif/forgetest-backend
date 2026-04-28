@@ -211,10 +211,24 @@ async def prescan_story(request: PipelineRequest) -> PrescanResponse:
 async def start_pipeline(request: PipelineRequest) -> JobStartResponse:
     issue_key = request.story.issue_key
 
-    existing = await supabase_service.get_active_job_for_issue(issue_key)
-    if existing:
-        logger.info(f"Dedup: returning existing job {existing['job_id']} for issue {issue_key}")
-        return JobStartResponse(job_id=existing["job_id"], status=existing["status"])
+    skip_audit = request.skip_audit
+
+    # Dedup: only apply for full pipeline runs (not Path A direct generate)
+    # Path A always creates a new job and cancels any existing one
+    if not skip_audit:
+        existing = await supabase_service.get_active_job_for_issue(issue_key)
+        if existing:
+            logger.info(f"Dedup: returning existing job {existing['job_id']} for issue {issue_key}")
+            return JobStartResponse(job_id=existing["job_id"], status=existing["status"])
+    else:
+        # Path A — cancel any existing active job (awaiting_review etc.)
+        existing = await supabase_service.get_active_job_for_issue(issue_key)
+        if existing:
+            logger.info(f"Path A: cancelling existing job {existing['job_id']} for issue {issue_key}")
+            await supabase_service.set_status(
+                existing['job_id'], "failed",
+                error="Superseded by direct test generation (Path A)"
+            )
 
     job_id = str(uuid.uuid4())
     await supabase_service.create_job(
@@ -224,7 +238,6 @@ async def start_pipeline(request: PipelineRequest) -> JobStartResponse:
         github_repo=request.github_repo
     )
 
-    skip_audit = getattr(request, 'skip_audit', False) or False
     if skip_audit:
         asyncio.create_task(run_skip_audit_async(request.story, job_id))
     else:

@@ -9,6 +9,7 @@ class PipelineRequest(BaseModel):
     story: JiraStory = Field(..., description="The Jira story to process through the pipeline")
     github_repo: Optional[str] = Field(None, description="GitHub repo in 'owner/repo' format")
     create_pr: bool = Field(False, description="Whether to create a GitHub PR after generating tests")
+    skip_audit: bool = Field(False, description="If True, skip audit/architect and go directly to coder (Path A)")
 
 
 class PipelineResponse(BaseModel):
