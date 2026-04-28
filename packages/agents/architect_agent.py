@@ -8,19 +8,28 @@ from packages.services.llm import llm_service
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """Transform Jira stories into Gherkin specs. Return ONLY this exact JSON structure, no other text:
+SYSTEM_PROMPT = """You are an expert QA Architect. Your job is to ENRICH a Jira user story's acceptance criteria based on audit findings.
+
+RULES:
+1. KEEP all original ACs but rewrite them into proper Given/When/Then format if needed.
+2. ADD NEW ACs to address gaps identified by the audit (issues, low-scoring dimensions, missing edge cases).
+3. Tag each AC: HAPPY (normal flow), SAD (error/failure), EDGE (boundary/corner case), SECURITY (auth/permissions).
+4. Original ACs should stay as HAPPY. New ACs addressing gaps should be SAD, EDGE, or SECURITY.
+5. Each AC must have specific, testable Given/When/Then — no vague placeholders.
+
+Return ONLY this exact JSON structure, no other text:
 {
   "hidden_paths": {
-    "auth_permissions": ["example"],
-    "input_boundaries": ["example"],
-    "network_async": ["example"],
-    "data_state": ["example"],
-    "ux_edge": ["example"]
+    "auth_permissions": ["list of auth-related test gaps"],
+    "input_boundaries": ["list of input validation gaps"],
+    "network_async": ["list of network/timing gaps"],
+    "data_state": ["list of data state gaps"],
+    "ux_edge": ["list of UX edge case gaps"]
   },
   "proposed_acs": [
-    {"id": "AC-1", "given": "...", "when": "...", "then": "...", "tag": "HAPPY"}
+    {"id": "AC-1", "given": "specific precondition", "when": "specific action", "then": "specific expected outcome", "tag": "HAPPY"}
   ],
-  "gherkin": "Feature: ...",
+  "gherkin": "Feature: ...\\n  Scenario: ...",
   "assumptions": ["ASSUMPTION: ..."]
 }
 
@@ -51,26 +60,55 @@ class ArchitectAgent:
         )
 
     def _build_prompt(self, story: JiraStory, audit: AuditResponse) -> str:
+        # Include ALL ACs, not just first 3
+        criteria_text = "\n".join([f"- {c}" for c in (story.acceptance_criteria or [])])
+        if not criteria_text:
+            criteria_text = "(none provided)"
+
+        # Build audit issues summary
         flags_summary = []
         for scenario in audit.scenarios:
             for flag in scenario.flags:
-                flags_summary.append(f"[{flag.type.value}] {flag.message}")
-        flags_text = "\n".join(flags_summary[:5]) if flags_summary else "None"
+                flags_summary.append(f"- [{flag.type.value}] {flag.message}")
+        flags_text = "\n".join(flags_summary) if flags_summary else "None"
+
+        # Build audit issues list
+        issues_text = "\n".join([f"- {i}" for i in (audit.issues or [])]) if audit.issues else "None"
         
-        criteria_text = "\n".join([f"- {c}" for c in story.acceptance_criteria[:3]])
+        # Build dimension scores
+        dims = audit.dimensions or {}
+        dim_lines = []
+        for dim_name, dim_val in dims.items():
+            score_val = dim_val if isinstance(dim_val, (int, float)) else getattr(dim_val, 'score', 0)
+            dim_lines.append(f"- {dim_name}: {round(score_val * 100)}%")
+        dims_text = "\n".join(dim_lines) if dim_lines else "None"
+
         epic = f"\nEpic: {story.epic_context}" if story.epic_context else ""
 
         return f"""Story: {story.issue_key} - {story.title}
 {story.description}
 
-ACs:
+Current Acceptance Criteria:
 {criteria_text}{epic}
 
-Audit Score: {audit.overall_score}
-Flags:
+AUDIT RESULTS:
+Overall Score: {round(audit.overall_score * 100)}%
+
+Dimension Scores:
+{dims_text}
+
+Critical Issues Found:
+{issues_text}
+
+Audit Flags:
 {flags_text}
 
-Enrich with hidden paths, proposed ACs, and Gherkin."""
+INSTRUCTIONS:
+1. Keep ALL {len(story.acceptance_criteria or [])} original ACs (rewrite into proper Given/When/Then if needed)
+2. Add NEW ACs specifically addressing each Critical Issue listed above
+3. Add EDGE/SAD ACs for any dimension scoring below 70%
+4. Ensure every new AC is specific, testable, and tagged appropriately
+5. Do NOT duplicate existing ACs — only add what's missing"""
 
     def _parse_response(self, response: str) -> dict:
         logger.warning(f"Raw LLM response (first 500 chars): {response[:500]}")
