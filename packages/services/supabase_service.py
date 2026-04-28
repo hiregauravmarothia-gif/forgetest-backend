@@ -1,9 +1,14 @@
 import logging
 import httpx
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 from apps.api.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ── TTL configuration ────────────────────────────────────
+JOB_TTL_HOURS = 48          # Delete completed/failed jobs older than this
+STUCK_JOB_MINUTES = 30      # Mark active jobs stuck longer than this as failed
 
 
 class SupabaseService:
@@ -114,6 +119,70 @@ class SupabaseService:
                 return None
             rows = response.json()
             return rows[0] if rows else None
+
+    # ── Job TTL / cleanup ─────────────────────────────────
+
+    async def cleanup_stale_jobs(self) -> dict:
+        """
+        Two-phase cleanup:
+          1. Stuck active jobs (running/awaiting_review/running_coder for >30 min)
+             → mark as 'failed' with an error message so the UI can show it.
+          2. Old terminal jobs (completed/failed older than 48 hours)
+             → hard delete from Supabase to reclaim storage.
+        Returns a summary dict with counts.
+        """
+        now = datetime.now(timezone.utc)
+        stuck_cutoff = (now - timedelta(minutes=STUCK_JOB_MINUTES)).isoformat()
+        ttl_cutoff = (now - timedelta(hours=JOB_TTL_HOURS)).isoformat()
+
+        summary = {"stuck_failed": 0, "expired_deleted": 0, "errors": []}
+
+        async with httpx.AsyncClient() as client:
+            # Phase 1: Fail stuck active jobs
+            try:
+                resp = await client.patch(
+                    f"{self._base}"
+                    f"?status=in.(running,awaiting_review,running_coder)"
+                    f"&created_at=lt.{stuck_cutoff}",
+                    headers={**self._headers, "Prefer": "return=representation"},
+                    json={
+                        "status": "failed",
+                        "error": f"Job expired — stuck for over {STUCK_JOB_MINUTES} minutes. Please re-run analysis."
+                    }
+                )
+                if resp.is_success:
+                    rows = resp.json()
+                    summary["stuck_failed"] = len(rows) if isinstance(rows, list) else 0
+                    if summary["stuck_failed"] > 0:
+                        logger.info(f"TTL: marked {summary['stuck_failed']} stuck jobs as failed")
+                else:
+                    summary["errors"].append(f"Phase 1 failed: {resp.status_code}")
+                    logger.warning(f"TTL cleanup phase 1 failed: {resp.status_code} {resp.text}")
+            except Exception as e:
+                summary["errors"].append(f"Phase 1 error: {str(e)}")
+                logger.error(f"TTL cleanup phase 1 error: {e}")
+
+            # Phase 2: Delete old terminal jobs
+            try:
+                resp = await client.delete(
+                    f"{self._base}"
+                    f"?status=in.(completed,failed)"
+                    f"&created_at=lt.{ttl_cutoff}",
+                    headers={**self._headers, "Prefer": "return=representation"},
+                )
+                if resp.is_success:
+                    rows = resp.json()
+                    summary["expired_deleted"] = len(rows) if isinstance(rows, list) else 0
+                    if summary["expired_deleted"] > 0:
+                        logger.info(f"TTL: deleted {summary['expired_deleted']} expired jobs (>{JOB_TTL_HOURS}h old)")
+                else:
+                    summary["errors"].append(f"Phase 2 failed: {resp.status_code}")
+                    logger.warning(f"TTL cleanup phase 2 failed: {resp.status_code} {resp.text}")
+            except Exception as e:
+                summary["errors"].append(f"Phase 2 error: {str(e)}")
+                logger.error(f"TTL cleanup phase 2 error: {e}")
+
+        return summary
 
 
 supabase_service = SupabaseService()
