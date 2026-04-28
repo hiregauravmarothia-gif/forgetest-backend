@@ -98,14 +98,21 @@ async def run_pipeline_async(story: JiraStory, job_id: str):
     ts = datetime.now(timezone.utc).isoformat()
 
     if score >= 0.7:
-        # PASS — create minimal architect and go straight to awaiting_review
-        # so user can still approve and get tests generated via Path A
+        # PASS — create architect from original Jira ACs so user can review/edit
+        from packages.schemas.architect_schema import ProposedAC, ACType
+        proposed_acs = []
+        for i, ac_text in enumerate(story.acceptance_criteria or []):
+            proposed_acs.append(ProposedAC(
+                id=f"AC-{i+1}", given="the user has access to the feature",
+                when=f"the action described in AC-{i+1} is performed",
+                then=ac_text, tag=ACType.HAPPY
+            ))
         minimal_architect = ArchitectResponse(
             issue_key=story.issue_key,
             hidden_paths=HiddenPaths(),
-            proposed_acs=[],
-            gherkin="Feature: Auto-generated\n  Scenario: Pass-through",
-            assumptions=[],
+            proposed_acs=proposed_acs,
+            gherkin=f"Feature: {story.title}\n  # Generated from {len(proposed_acs)} original ACs",
+            assumptions=["Story passed quality gate. ACs sourced from original Jira story."],
             timestamp=ts
         )
         await supabase_service.set_architect_result(job_id, minimal_architect.model_dump())
@@ -344,12 +351,20 @@ async def run_pipeline(request: PipelineRequest) -> PipelineResponse:
     ts = datetime.now(timezone.utc).isoformat()
 
     if score >= 0.7:
+        from packages.schemas.architect_schema import ProposedAC, ACType
+        proposed_acs = []
+        for i, ac_text in enumerate(story.acceptance_criteria or []):
+            proposed_acs.append(ProposedAC(
+                id=f"AC-{i+1}", given="the user has access to the feature",
+                when=f"the action described in AC-{i+1} is performed",
+                then=ac_text, tag=ACType.HAPPY
+            ))
         minimal_architect = ArchitectResponse(
             issue_key=story.issue_key,
             hidden_paths=HiddenPaths(),
-            proposed_acs=[],
-            gherkin="Feature: Auto-generated\n  Scenario: Pass-through",
-            assumptions=[],
+            proposed_acs=proposed_acs,
+            gherkin=f"Feature: {story.title}\n  # Generated from {len(proposed_acs)} original ACs",
+            assumptions=["Story passed quality gate. ACs sourced from original Jira story."],
             timestamp=ts
         )
         try:
