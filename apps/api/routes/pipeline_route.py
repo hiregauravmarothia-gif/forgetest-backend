@@ -15,6 +15,7 @@ from packages.schemas.validator_schema import ValidatorStatus
 from packages.agents import auditor_agent, architect_agent, coder_agent
 from packages.agents.validator_agent import validator_agent
 from packages.services.github import github_service
+from packages.services.slack import slack_service
 from packages.services.supabase_service import supabase_service
 from apps.api.config import settings
 
@@ -89,6 +90,21 @@ async def run_pipeline_async(story: JiraStory, job_id: str):
         return
 
     await supabase_service.set_audit_result(job_id, audit_response.model_dump())
+
+    score = audit_response.overall_score or 0.0
+    if score < 0.40:
+        async def _notify_slack():
+            try:
+                await slack_service.send_low_score_alert(
+                    issue_key=story.issue_key,
+                    score=score,
+                    title=story.title,
+                    job_id=job_id,
+                )
+            except Exception as err:
+                logger.warning(f"Slack alert failed for job {job_id}: {err}")
+
+        asyncio.create_task(_notify_slack())
 
     if audit_response.hard_fail:
         await supabase_service.set_status(job_id, "failed", error=audit_response.hard_fail_reason)
