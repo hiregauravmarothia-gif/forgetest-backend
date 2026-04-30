@@ -184,5 +184,22 @@ class SupabaseService:
 
         return summary
 
+    async def get_all_jobs(self, limit: int = 1000) -> list[dict]:
+        """Fetch all jobs for metrics aggregation."""
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(
+                    f"{self._base}?limit={limit}&order=created_at.desc",
+                    headers=self._headers
+                )
+                if resp.is_success:
+                    return resp.json() if isinstance(resp.json(), list) else []
+                else:
+                    logger.warning(f"get_all_jobs failed: {resp.status_code}")
+                    return []
+            except Exception as e:
+                logger.error(f"get_all_jobs error: {str(e)}")
+                return []
+
 
 supabase_service = SupabaseService()

@@ -53,6 +53,14 @@ class ApproveResponse(BaseModel):
     issue_key: str
 
 
+class TrustMetrics(BaseModel):
+    total_stories: int
+    issues_prevented: int
+    avg_audit_score: float
+    completion_rate: float
+    high_confidence_count: int
+
+
 async def run_skip_audit_async(story: JiraStory, job_id: str):
     ts = datetime.now(timezone.utc).isoformat()
     skipped_audit = {
@@ -383,3 +391,41 @@ async def run_pipeline(request: PipelineRequest) -> PipelineResponse:
         error=error_msg,
         pr_result=pr_result
     )
+
+
+@router.get("/trust/metrics", response_model=TrustMetrics, status_code=200)
+async def get_trust_metrics() -> TrustMetrics:
+    """Aggregate trust metrics from all completed jobs."""
+    try:
+        all_jobs = await supabase_service.get_all_jobs()
+        
+        if not all_jobs:
+            return TrustMetrics(
+                total_stories=0,
+                issues_prevented=0,
+                avg_audit_score=0.0,
+                completion_rate=0.0,
+                high_confidence_count=0
+            )
+        
+        # Calculate metrics
+        total_stories = len(all_jobs)
+        completed_jobs = [j for j in all_jobs if j.get('status') == 'completed']
+        issues_prevented = len([j for j in all_jobs if j.get('audit', {}).get('overall_score', 1.0) < 0.4])
+        high_confidence_jobs = [j for j in all_jobs if j.get('audit', {}).get('confidence', 0.0) >= 0.7]
+        completion_rate = len(completed_jobs) / total_stories if total_stories > 0 else 0.0
+        
+        # Average audit score
+        audit_scores = [j.get('audit', {}).get('overall_score', 0.0) for j in all_jobs if j.get('audit')]
+        avg_audit_score = sum(audit_scores) / len(audit_scores) if audit_scores else 0.0
+        
+        return TrustMetrics(
+            total_stories=total_stories,
+            issues_prevented=issues_prevented,
+            avg_audit_score=round(avg_audit_score, 2),
+            completion_rate=round(completion_rate, 2),
+            high_confidence_count=len(high_confidence_jobs)
+        )
+    except Exception as e:
+        logger.error(f"Failed to get trust metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
