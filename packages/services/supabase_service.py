@@ -132,8 +132,8 @@ class SupabaseService:
         Returns a summary dict with counts.
         """
         now = datetime.now(timezone.utc)
-        stuck_cutoff = (now - timedelta(minutes=STUCK_JOB_MINUTES)).isoformat()
-        ttl_cutoff = (now - timedelta(hours=JOB_TTL_HOURS)).isoformat()
+        stuck_cutoff = (now - timedelta(minutes=STUCK_JOB_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        ttl_cutoff = (now - timedelta(hours=JOB_TTL_HOURS)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         summary = {"stuck_failed": 0, "expired_deleted": 0, "errors": []}
 
