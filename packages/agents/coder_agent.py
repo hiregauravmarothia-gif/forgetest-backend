@@ -67,6 +67,12 @@ class CoderAgent:
         edited_acs: list[dict] | None = None,
         validator_feedback: str | None = None
     ) -> CoderResponse:
+        logger.info(f"CoderAgent.generate called with edited_acs: {edited_acs}")
+        if edited_acs:
+            logger.info(f"Number of edited ACs: {len(edited_acs)}")
+            for i, ac in enumerate(edited_acs):
+                logger.info(f"AC {i}: {ac}")
+
         user_prompt = self._build_prompt(story, architect_response, edited_acs, validator_feedback)
 
         messages = [
@@ -170,6 +176,7 @@ class CoderAgent:
         # The user has already reviewed everything — their list is the ONLY source of truth.
         # Rejected ACs are filtered out by the ModalApp before reaching here.
         if edited_acs:
+            logger.info(f"Building prompt with {len(edited_acs)} edited ACs")
             edited_text = "\n".join([
                 f"{ac.get('id', f'AC-{i+1}')} [{ac.get('tag', 'HAPPY')}]\n"
                 f"  Given {ac.get('given', '')}\n"
@@ -177,6 +184,7 @@ class CoderAgent:
                 f"  Then {ac.get('then', '')}"
                 for i, ac in enumerate(edited_acs)
             ])
+            logger.info(f"Edited ACs text: {edited_text}")
             proposed_acs = f"USER-REVIEWED ACs (primary source):\n{edited_text}"
             # Clear original ACs — the user's reviewed list supersedes them.
             # Without this, the LLM generates tests for rejected ACs too.
@@ -215,6 +223,106 @@ Generate complete Playwright TypeScript tests covering ALL acceptance criteria a
 Every AC must have a corresponding describe/test block tagged with AC-N.
 Page Object must have methods for every distinct user action.{feedback_section}"""
 
+    def _build_prompt(
+        self,
+        story: JiraStory,
+        architect_response: ArchitectResponse,
+        edited_acs: list[dict] | None = None,
+        validator_feedback: str | None = None
+    ) -> str:
+        # Use ALL original ACs from the story first (richer source)
+        original_acs = ""
+        if story.acceptance_criteria:
+            original_acs = "\n".join([
+                f"AC-{i+1}: {ac}" for i, ac in enumerate(story.acceptance_criteria)
+            ])
+
+        # Use ALL proposed ACs from architect (enriched with Given/When/Then)
+        proposed_acs = ""
+        if architect_response.proposed_acs:
+            proposed_acs = "\n".join([
+                f"{ac.id} [{ac.tag}]\n  Given {ac.given}\n  When {ac.when}\n  Then {ac.then}"
+                for ac in architect_response.proposed_acs
+            ])
+
+        # Full gherkin — no truncation
+        gherkin_text = architect_response.gherkin or "Feature: auto-generated"
+
+        # Hidden paths for additional coverage context
+        paths = architect_response.hidden_paths
+        hidden_paths_text = ""
+        all_paths = (
+            paths.auth_permissions +
+            paths.input_boundaries +
+            paths.network_async +
+            paths.data_state +
+            paths.ux_edge
+        )
+        if all_paths:
+            hidden_paths_text = f"\nHidden paths to consider:\n" + "\n".join([f"- {p}" for p in all_paths[:10]])
+
+        # Assumptions for test setup context
+        assumptions_text = ""
+        if architect_response.assumptions:
+            assumptions_text = "\nAssumptions (use for test setup/fixtures):\n" + "\n".join(
+                [f"- {a}" for a in architect_response.assumptions]
+            )
+
+        # Path B: use user-edited ACs instead of architect proposed ACs
+        # The user has already reviewed everything — their list is the ONLY source of truth.
+        # Rejected ACs are filtered out by the ModalApp before reaching here.
+        if edited_acs:
+            logger.info(f"Building prompt with {len(edited_acs)} edited ACs")
+            edited_text = "\n".join([
+                f"{ac.get('id', f'AC-{i+1}')} [{ac.get('tag', 'HAPPY')}]\n"
+                f"  Given {ac.get('given', '')}\n"
+                f"  When {ac.get('when', '')}\n"
+                f"  Then {ac.get('then', '')}"
+                for i, ac in enumerate(edited_acs)
+            ])
+            logger.info(f"Edited ACs text: {edited_text}")
+            proposed_acs = f"USER-REVIEWED ACs (primary source):\n{edited_text}"
+            # Clear original ACs — the user's reviewed list supersedes them.
+            # Without this, the LLM generates tests for rejected ACs too.
+            original_acs = ""
+
+        feedback_section = ""
+        if validator_feedback:
+            feedback_section = f"\n\nVALIDATOR FEEDBACK - FIX THESE ISSUES:\n{validator_feedback}"
+
+        # Build the prompt — adapt wording based on whether we have user-reviewed ACs
+        if edited_acs:
+            ac_section = f"""USER-REVIEWED ACCEPTANCE CRITERIA (cover ONLY these — {len(edited_acs)} ACs):
+{proposed_acs}
+
+⚠️ IMPORTANT: Generate tests ONLY for the {len(edited_acs)} ACs listed above.
+Do NOT add tests for any ACs that are not in this list. The user has reviewed
+and removed ACs they don't want tested."""
+        else:
+            ac_section = f"""ORIGINAL ACCEPTANCE CRITERIA (cover ALL of these):
+{original_acs or 'See proposed ACs below'}
+
+PROPOSED ACs (Given/When/Then):
+{proposed_acs or 'See original ACs above'}"""
+
+        final_prompt = f"""Issue: {story.issue_key} — {story.title}
+Description: {story.description or 'Not provided'}
+
+{ac_section}
+
+GHERKIN SPECIFICATION:
+{gherkin_text}
+{hidden_paths_text}
+{assumptions_text}
+
+Generate complete Playwright TypeScript tests covering ALL acceptance criteria above.
+Every AC must have a corresponding describe/test block tagged with AC-N.
+Page Object must have methods for every distinct user action.{feedback_section}"""
+
+        logger.info(f"Final prompt length: {len(final_prompt)}")
+        logger.info(f"Final prompt (first 1000 chars): {final_prompt[:1000]}")
+        return final_prompt
+
     def _parse_response(self, response: str) -> dict:
         logger.warning(f"Raw LLM response (first 500 chars): {response[:500]}")
 
@@ -247,6 +355,7 @@ Page Object must have methods for every distinct user action.{feedback_section}"
                 })
             data["files"] = converted
 
+        logger.info(f"Parsed response: {len(data.get('files', []))} files, manifest coverage: {len(data.get('manifest', {}).get('coverage', []))}")
         return data
 
 

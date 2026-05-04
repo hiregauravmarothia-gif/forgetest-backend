@@ -138,6 +138,9 @@ async def run_coder_async(
     path: str = "A",
     edited_acs: list[dict] | None = None
 ):
+    logger.info(f"run_coder_async called with path={path}, edited_acs={edited_acs}")
+    if edited_acs:
+        logger.info(f"run_coder_async: Number of edited_acs: {len(edited_acs)}")
     retry_count = 0
     coder_response = None
     validator_feedback = None
@@ -145,6 +148,7 @@ async def run_coder_async(
     while retry_count <= MAX_RETRIES:
         try:
             # Generate tests — pass edited_acs and feedback on retries
+            logger.info(f"Calling coder_agent.generate with edited_acs: {edited_acs is not None}")
             coder_response = await coder_agent.generate(
                 story=story,
                 architect_response=architect_response,
@@ -278,6 +282,12 @@ async def get_pipeline_status(job_id: str) -> JobStatusResponse:
 async def approve_pipeline(job_id: str, request: ApproveRequest = None) -> ApproveResponse:
     if request is None:
         request = ApproveRequest()
+
+    logger.info(f"approve_pipeline called with path={request.path}, edited_acs={request.edited_acs}")
+    if request.edited_acs:
+        logger.info(f"Number of edited_acs: {len(request.edited_acs)}")
+        for i, ac in enumerate(request.edited_acs):
+            logger.info(f"AC {i}: {ac}")
 
     job = await supabase_service.get_job(job_id)
     if not job:
